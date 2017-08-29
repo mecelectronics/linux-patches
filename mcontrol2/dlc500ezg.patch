@@ -1,0 +1,56 @@
+diff --git a/drivers/gpu/drm/panel/panel-simple.c b/drivers/gpu/drm/panel/panel-simple.c
+index 87d08f7..a565b8b 100644
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -616,6 +616,41 @@ static const struct panel_desc chunghwa_claa101wb01 = {
+ 	},
+ };
+ 
++#define DLC_500_EZG_THD 800
++#define DLC_500_EZG_THPW 48
++#define DLC_500_EZG_THB 88
++#define DLC_500_EZG_THFP 40
++#define DLC_500_EZG_TVD 480
++#define DLC_500_EZG_TVPW 3
++#define DLC_500_EZG_TVB 32
++#define DLC_500_EZG_TVFP 13
++
++static const struct drm_display_mode dlc_500_EZG_mode = {
++        .clock = 33260,
++        .hdisplay = DLC_500_EZG_THD,
++        .hsync_start = DLC_500_EZG_THD + DLC_500_EZG_THFP,
++        .hsync_end = DLC_500_EZG_THD + DLC_500_EZG_THFP + DLC_500_EZG_THPW,
++        .htotal = DLC_500_EZG_THD + DLC_500_EZG_THFP + DLC_500_EZG_THB,
++        .vdisplay = DLC_500_EZG_TVD,
++        .vsync_start = DLC_500_EZG_TVD + DLC_500_EZG_TVFP,
++        .vsync_end = DLC_500_EZG_TVD + DLC_500_EZG_TVFP + DLC_500_EZG_TVPW,
++        .vtotal = DLC_500_EZG_TVD + DLC_500_EZG_TVFP + DLC_500_EZG_TVB,
++        .vrefresh = 60,
++        .flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
++};
++
++static const struct panel_desc dlc_500_EZG = {
++        .modes = &dlc_500_EZG_mode,
++        .num_modes = 1,
++        .bpc = 8,
++        .size = {
++                .width = 108,
++                .height = 65,
++        },
++	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
++};
++
++
+ static const struct drm_display_mode edt_et057090dhu_mode = {
+ 	.clock = 25175,
+ 	.hdisplay = 640,
+@@ -1024,6 +1059,9 @@ static const struct of_device_id platform_of_match[] = {
+ 		.compatible = "chunghwa,claa101wb01",
+ 		.data = &chunghwa_claa101wb01
+ 	}, {
++		.compatible = "dlc,500ezg",
++		.data = &dlc_500_EZG,
++	}, {
+ 		.compatible = "edt,et057090dhu",
+ 		.data = &edt_et057090dhu,
+ 	}, {

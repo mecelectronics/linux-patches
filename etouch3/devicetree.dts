@@ -1,0 +1,631 @@
+/*
+ * This is based on sun4i-a10-olinuxino-lime.dts
+ *
+ * Copyright 2014 - Hans de Goede <hdegoede@redhat.com>
+ * Copyright (c) 2014 FUKAUMI Naoki <naobsd@gmail.com>
+ *
+ * This file is dual-licensed: you can use it either under the terms
+ * of the GPL or the X11 license, at your option. Note that this dual
+ * licensing only applies to this file, and not this project as a
+ * whole.
+ *
+ *  a) This file is free software; you can redistribute it and/or
+ *     modify it under the terms of the GNU General Public License as
+ *     published by the Free Software Foundation; either version 2 of the
+ *     License, or (at your option) any later version.
+ *
+ *     This file is distributed in the hope that it will be useful,
+ *     but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *     GNU General Public License for more details.
+ *
+ * Or, alternatively,
+ *
+ *  b) Permission is hereby granted, free of charge, to any person
+ *     obtaining a copy of this software and associated documentation
+ *     files (the "Software"), to deal in the Software without
+ *     restriction, including without limitation the rights to use,
+ *     copy, modify, merge, publish, distribute, sublicense, and/or
+ *     sell copies of the Software, and to permit persons to whom the
+ *     Software is furnished to do so, subject to the following
+ *     conditions:
+ *
+ *     The above copyright notice and this permission notice shall be
+ *     included in all copies or substantial portions of the Software.
+ *
+ *     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ *     EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ *     OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ *     NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ *     HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ *     WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ *     OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+/dts-v1/;
+#include "sun7i-a20.dtsi"
+#include "sunxi-common-regulators.dtsi"
+
+#include "sunxi-itead-core-common.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/pinctrl/sun4i-a10.h>
+#include <dt-bindings/pwm/pwm.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "MEC eTouch V3";
+	compatible = "olimex,a20-olinuxino-lime", "allwinner,sun7i-a20";
+
+	aliases {
+		serial0 = &uart0;
+		// spi2 = &spi2;
+	};
+
+	chosen {
+		version = "6089895-sunxi-etouch3";
+
+		stdout-path = "serial0:115200n8";
+	        framebuffer@0 {
+                        compatible = "allwinner,simple-framebuffer",
+                                     "simple-framebuffer";
+                        allwinner,pipeline = "de_be0-lcd0";
+                        clocks = <&ahb_gates 36>, <&ahb_gates 44>,
+                                 <&de_be0_clk>, <&tcon0_ch0_clk>,
+                                 <&dram_gates 26>;
+                        status = "okay";
+                };
+
+		reg_axp_ipsout: axp_ipsout {
+			compatible = "regulator-fixed";
+			regulator-name = "axp-ipsout";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+			regulator-always-on;
+		};
+	};
+	
+	gpio_keys_polled {
+		compatible = "gpio-keys-polled";
+		pinctrl-names = "default";
+		pinctrl-0 = <&key_pins_etouch>;
+		poll-interval = <20>;
+		autorepeat;
+		
+		button@0 {	
+			label = "Restart";
+			linux,code = <KEY_RESTART>;
+			gpios = <&pio 2 17 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&led_pins_etouch>;
+
+		system-sw {
+			label = "system:power-sw";
+			gpios = <&pio 7 2 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+		};
+		green {
+			label = "front:green";
+			gpios = <&pio 6 1 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "heartbeat";
+		};
+		red {
+			label = "front:red";
+			gpios = <&pio 6 0 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+			panic-indicator;
+		};
+		blue {
+			label = "front:blue";
+			gpios = <&pio 6 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+	};
+
+	led-pwm {
+		compatible = "pwm-leds";
+		brightness {
+			label = "front:brightness";
+			/* 1kHZ = 1 000 000 ns */
+			pwms = <&pwm 1 1000000 0>;
+			max-brightness = <255>;
+                        linux,default-trigger = "default-on";
+                        default-state = "on";
+
+		};
+	};
+
+        backlight {
+                compatible = "pwm-backlight";
+                pwms = <&pwm 0 1000000 0>;
+                brightness-levels = <0 10 20 30 40 50 60 70 80 90 100>;
+                default-brightness-level = <6>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&bl_enable_pin>;
+		enable-gpios = <&pio 7 8 GPIO_ACTIVE_HIGH>;
+        };
+
+	mmc1_pwrseq: mmc1pwrseq {
+        	compatible = "mmc-pwrseq-simple";
+		pinctrl-names = "default";
+                pinctrl-0 = <&mmc1_pin_etouch>;
+        	reset-gpios = <&pio 7 15 GPIO_ACTIVE_LOW>;
+	};
+
+};
+
+&cpu0 {
+	operating-points = <
+		/* kHz	  uV */
+		960000	1400000
+		912000	1400000
+		864000	1300000
+		720000	1200000
+		528000	1100000
+		312000	1000000
+		144000	1000000
+		60000	1000000
+		>;
+	cooling-max-level = <7>;
+	cpu-supply = <&reg_dcdc2>;
+};
+
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm0_pins_a>, <&pwm1_pins_a>;
+	status = "okay";
+};
+
+&i2c0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	status = "okay";
+
+        axp209: pmic@34 {
+                compatible = "x-powers,axp209";
+                reg = <0x34>;
+                interrupt-parent = <&nmi_intc>;
+                interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+/*
+		acin-supply = <&reg_axp_ipsout>;
+		vin2-supply = <&reg_axp_ipsout>;
+		vin3-supply = <&reg_axp_ipsout>;
+		ldo24in-supply = <&reg_axp_ipsout>;
+		ldo3in-supply = <&reg_axp_ipsout>;
+*/
+	};
+
+};
+
+#include "axp209.dtsi"
+
+&reg_dcdc2 {
+        regulator-always-on;
+        regulator-min-microvolt = <1000000>;
+        regulator-max-microvolt = <1400000>;
+        regulator-name = "vdd-cpu";
+};
+
+&reg_dcdc3 {
+        regulator-always-on;
+        regulator-min-microvolt = <1000000>;
+        regulator-max-microvolt = <1400000>;
+        regulator-name = "vdd-int-dll";
+};
+
+&reg_ldo1 {
+        regulator-always-on;
+        regulator-name = "vdd-rtc";
+};
+
+&reg_ldo2 {
+        regulator-always-on;
+        regulator-min-microvolt = <3000000>;
+        regulator-max-microvolt = <3000000>;
+        regulator-name = "avcc";
+};
+
+&reg_ldo3 {
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+	regulator-always-on;
+};
+
+&reg_ldo4 {
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+	regulator-always-on;
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	status = "okay";
+
+	eeprom: eeprom@50 {
+		compatible = "atmel,24c64";
+		reg = <0x50>;
+		pagesize = <32>;
+	};
+ 	ft6x06@38 {
+ 		compatible = "focaltech,ft6236";
+ 		reg = <0x38>;
+ 		interrupt-parent = <&pio>;
+ 		interrupts = <8 14 IRQ_TYPE_LEVEL_LOW>;
+ 		touchscreen-size-x = <320>;
+ 		touchscreen-size-y = <480>;
+		reset-gpios = <&pio 2 4 0>;
+ 	};
+
+	hdc100x@40 {
+		compatible = "hdc100x";
+		reg = <0x40>;
+	};
+	noa1305@39 {
+		compatible = "noa1305";
+		reg = <0x39>;
+	};
+	cdm7160@69 {
+		compatible = "figaro,cdm7160",
+			     "cdm7160";
+		reg = <0x69>;
+	};
+};
+
+&mmc0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc0_pins_a>, <&mmc0_cd_pin_reference_design>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	non-removable;
+	status = "okay";
+};
+
+&mmc2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc2_pins_a>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	non-removable;
+	status = "okay";
+};
+
+/* sdio wlan ap6181*/
+/*
+mmc1_pwrseq {
+	compatible = "mmc-pwrseq-simple";
+	reset-gpios = <&pio 7 15 GPIO_ACTIVE_LOW>;
+};
+*/
+&mmc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc1_pins_a>;
+	vmmc-supply = <&reg_vcc3v3>;
+	bus-width = <4>;
+	status = "okay";
+	non-removable;
+	enable-sdio-wakeup;
+	mmc-pwrseq = <&mmc1_pwrseq>;	
+	
+	#address-cells = <1>;
+	#size-cells = <0>;
+	brcmf: bcrmf@1 {
+		reg = <1>;
+		compatible = "brcm,bcm4329-fmac";
+		interrupt-parent = <&pio>;
+		interrupts = <7 17 IRQ_TYPE_LEVEL_LOW>; /* PH17 / EINT17 */
+		interrupt-names = "host-wake";
+	};
+};
+
+&usbphy {
+	status = "okay";
+};
+
+&pio {
+static-PA0 { gpio-hog; input; gpios=<0 0>; };
+static-PA1 { gpio-hog; input; gpios=<0 1>; };
+static-PA2 { gpio-hog; input; gpios=<0 2>; };
+static-PA3 { gpio-hog; input; gpios=<0 3>; };
+static-PA4 { gpio-hog; input; gpios=<0 4>; };
+static-PA5 { gpio-hog; input; gpios=<0 5>; };
+static-PA6 { gpio-hog; input; gpios=<0 6>; };
+static-PA7 { gpio-hog; input; gpios=<0 7>; };
+static-PA8 { gpio-hog; input; gpios=<0 8>; };
+static-PA9 { gpio-hog; input; gpios=<0 9>; };
+static-PA10 { gpio-hog; input; gpios=<0 10>; };
+static-PA11 { gpio-hog; input; gpios=<0 11>; };
+static-PA12 { gpio-hog; input; gpios=<0 12>; };
+static-PA13 { gpio-hog; input; gpios=<0 13>; };
+static-PA14 { gpio-hog; input; gpios=<0 14>; };
+static-PA15 { gpio-hog; input; gpios=<0 15>; };
+static-PA16 { gpio-hog; input; gpios=<0 16>; };
+static-PA17 { gpio-hog; input; gpios=<0 17>; };
+static-PB3 { gpio-hog; input; gpios=<1 3>; };
+static-PB4 { gpio-hog; input; gpios=<1 4>; };
+static-PB5 { gpio-hog; input; gpios=<1 5>; };
+static-PB6 { gpio-hog; input; gpios=<1 6>; };
+static-PB7 { gpio-hog; input; gpios=<1 7>; };
+static-PB8 { gpio-hog; input; gpios=<1 8>; };
+static-PB9 { gpio-hog; input; gpios=<1 9>; };
+static-PB10 { gpio-hog; input; gpios=<1 10>; };
+static-PB11 { gpio-hog; input; gpios=<1 11>; };
+static-PB12 { gpio-hog; input; gpios=<1 12>; };
+static-PB13 { gpio-hog; input; gpios=<1 13>; };
+static-PB17 { gpio-hog; input; gpios=<1 17>; };
+static-PB20 { gpio-hog; input; gpios=<1 20>; };
+static-PB21 { gpio-hog; input; gpios=<1 21>; };
+static-PC0 { gpio-hog; input; gpios=<2 0>; };
+static-PC1 { gpio-hog; input; gpios=<2 1>; };
+static-PC2 { gpio-hog; input; gpios=<2 2>; };
+static-PC3 { gpio-hog; input; gpios=<2 3>; };
+static-PC4 { gpio-hog; input; gpios=<2 4>; };
+static-PC5 { gpio-hog; input; gpios=<2 5>; };
+static-PC12 { gpio-hog; input; gpios=<2 12>; };
+static-PC13 { gpio-hog; input; gpios=<2 13>; };
+static-PC14 { gpio-hog; input; gpios=<2 14>; };
+static-PC15 { gpio-hog; input; gpios=<2 15>; };
+static-PC18 { gpio-hog; input; gpios=<2 18>; };
+static-PC19 { gpio-hog; input; gpios=<2 19>; };
+static-PC20 { gpio-hog; input; gpios=<2 20>; };
+static-PC21 { gpio-hog; input; gpios=<2 21>; };
+static-PC22 { gpio-hog; input; gpios=<2 22>; };
+static-PC23 { gpio-hog; input; gpios=<2 23>; };
+static-PC24 { gpio-hog; input; gpios=<2 24>; };
+static-PD0 { gpio-hog; input; gpios=<3 0>; };
+static-PD1 { gpio-hog; input; gpios=<3 1>; };
+static-PD2 { gpio-hog; input; gpios=<3 2>; };
+static-PD3 { gpio-hog; input; gpios=<3 3>; };
+static-PD4 { gpio-hog; input; gpios=<3 4>; };
+static-PD5 { gpio-hog; input; gpios=<3 5>; };
+static-PD6 { gpio-hog; input; gpios=<3 6>; };
+static-PD7 { gpio-hog; input; gpios=<3 7>; };
+static-PD8 { gpio-hog; input; gpios=<3 8>; };
+static-PD9 { gpio-hog; input; gpios=<3 9>; };
+static-PD10 { gpio-hog; input; gpios=<3 10>; };
+static-PD11 { gpio-hog; input; gpios=<3 11>; };
+static-PD12 { gpio-hog; input; gpios=<3 12>; };
+static-PD13 { gpio-hog; input; gpios=<3 13>; };
+static-PD14 { gpio-hog; input; gpios=<3 14>; };
+static-PD15 { gpio-hog; input; gpios=<3 15>; };
+static-PD16 { gpio-hog; input; gpios=<3 16>; };
+static-PD17 { gpio-hog; input; gpios=<3 17>; };
+static-PD18 { gpio-hog; input; gpios=<3 18>; };
+static-PD19 { gpio-hog; input; gpios=<3 19>; };
+static-PD20 { gpio-hog; input; gpios=<3 20>; };
+static-PD21 { gpio-hog; input; gpios=<3 21>; };
+static-PD22 { gpio-hog; input; gpios=<3 22>; };
+static-PD23 { gpio-hog; input; gpios=<3 23>; };
+static-PD24 { gpio-hog; input; gpios=<3 24>; };
+static-PD25 { gpio-hog; input; gpios=<3 25>; };
+static-PD26 { gpio-hog; input; gpios=<3 26>; };
+static-PD27 { gpio-hog; input; gpios=<3 27>; };
+static-PE0 { gpio-hog; input; gpios=<4 0>; };
+static-PE1 { gpio-hog; input; gpios=<4 1>; };
+static-PE2 { gpio-hog; input; gpios=<4 2>; };
+static-PE3 { gpio-hog; input; gpios=<4 3>; };
+static-PE4 { gpio-hog; input; gpios=<4 4>; };
+static-PE5 { gpio-hog; input; gpios=<4 5>; };
+static-PE6 { gpio-hog; input; gpios=<4 6>; };
+static-PE7 { gpio-hog; input; gpios=<4 7>; };
+static-PE8 { gpio-hog; input; gpios=<4 8>; };
+static-PE9 { gpio-hog; input; gpios=<4 9>; };
+static-PE10 { gpio-hog; input; gpios=<4 10>; };
+static-PE11 { gpio-hog; input; gpios=<4 11>; };
+static-PG3 { gpio-hog; input; gpios=<6 3>; };
+static-PG4 { gpio-hog; input; gpios=<6 4>; };
+static-PG5 { gpio-hog; input; gpios=<6 5>; };
+static-PG8 { gpio-hog; input; gpios=<6 8>; };
+static-PG9 { gpio-hog; input; gpios=<6 9>; };
+static-PH0 { gpio-hog; input; gpios=<7 0>; };
+static-PH4 { gpio-hog; input; gpios=<7 4>; };
+static-PH7 { gpio-hog; input; gpios=<7 7>; };
+static-PH9 { gpio-hog; input; gpios=<7 9>; };
+static-PH10 { gpio-hog; input; gpios=<7 10>; };
+static-PH11 { gpio-hog; input; gpios=<7 11>; };
+static-PH12 { gpio-hog; input; gpios=<7 12>; };
+static-PH13 { gpio-hog; input; gpios=<7 13>; };
+static-PH14 { gpio-hog; input; gpios=<7 14>; };
+static-PH16 { gpio-hog; input; gpios=<7 16>; };
+static-PH17 { gpio-hog; input; gpios=<7 17>; };
+static-PH18 { gpio-hog; input; gpios=<7 18>; };
+static-PH19 { gpio-hog; input; gpios=<7 19>; };
+static-PH20 { gpio-hog; input; gpios=<7 20>; };
+static-PH21 { gpio-hog; input; gpios=<7 21>; };
+static-PI0 { gpio-hog; input; gpios=<8 0>; };
+static-PI1 { gpio-hog; input; gpios=<8 1>; };
+static-PI2 { gpio-hog; input; gpios=<8 2>; };
+static-PI4 { gpio-hog; input; gpios=<8 4>; };
+static-PI5 { gpio-hog; input; gpios=<8 5>; };
+static-PI6 { gpio-hog; input; gpios=<8 6>; };
+static-PI7 { gpio-hog; input; gpios=<8 7>; };
+static-PI8 { gpio-hog; input; gpios=<8 8>; };
+static-PI9 { gpio-hog; input; gpios=<8 9>; };
+static-PI10 { gpio-hog; input; gpios=<8 10>; };
+static-PI11 { gpio-hog; input; gpios=<8 11>; };
+static-PI12 { gpio-hog; input; gpios=<8 12>; };
+static-PI13 { gpio-hog; input; gpios=<8 13>; };
+static-PI14 { gpio-hog; input; gpios=<8 14>; };
+static-PI15 { gpio-hog; input; gpios=<8 15>; };
+static_define: static-pins@0 {
+allwinner,pins = "PA0", "PA1", "PA2", "PA3", "PA4", "PA5", "PA6", "PA7", "PA8", "PA9", "PA10", "PA11", "PA12", "PA13", "PA14", "PA15", "PA16", "PA17", "PB3", "PB4", "PB5", "PB6", "PB7", "PB8", "PB9", "PB10", "PB11", "PB12", "PB13", "PB17", "PB20", "PB21", "PC0", "PC1", "PC2", "PC3", "PC4", "PC5", "PC12", "PC13", "PC14", "PC15", "PC18", "PC19", "PC20", "PC21", "PC22", "PC23", "PC24", "PD0", "PD1", "PD2", "PD3", "PD4", "PD5", "PD6", "PD7", "PD8", "PD9", "PD10", "PD11", "PD12", "PD13", "PD14", "PD15", "PD16", "PD17", "PD18", "PD19", "PD20", "PD21", "PD22", "PD23", "PD24", "PD25", "PD26", "PD27", "PE0", "PE1", "PE2", "PE3", "PE4", "PE5", "PE6", "PE7", "PE8", "PE9", "PE10", "PE11", "PG3", "PG4", "PG5", "PG8", "PG9", "PH0", "PH4", "PH7", "PH9", "PH10", "PH11", "PH12", "PH13", "PH14", "PH16", "PH17", "PH18", "PH19", "PH20", "PH21", "PI0", "PI1", "PI2", "PI4", "PI5", "PI6", "PI7", "PI8", "PI9", "PI10", "PI11", "PI12", "PI13", "PI14", "PI15";
+allwinner,function = "gpio_in";
+allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+allwinner,pull = <SUN4I_PINCTRL_PULL_DOWN>;
+};
+
+	uart2_pins_etouch: uart2@0 {
+		allwinner,pins = "PI16", "PI18", "PI19";
+		allwinner,function = "uart2";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
+	};
+
+	uart3_pins_etouch: uart3@0 {
+		allwinner,pins = "PG6", "PG7";
+		allwinner,function = "uart3";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+	mmc1_pin_etouch: mmc1_pwrseq_pin@0 {
+                allwinner,pins = "PH15";
+                allwinner,function = "gpio_out";
+                allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+                allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+        };
+	mmc1_pins_a: mmc1@0 {
+		allwinner,pins = "PH22", "PH23", "PH24",
+			  "PH25", "PH26", "PH27";
+		allwinner,function = "mmc1";
+		allwinner,drive = <SUN4I_PINCTRL_30_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
+	};
+
+	led_pins_etouch: led_pins@0 {
+		allwinner,pins = "PH2", "PG0", "PG1", "PG2";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_20_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+
+	// we missuse PH5 because it's not connected and not needed otherwise
+        // the real iddet (PH4) would force us to be host
+	usb0_id_detect_pin: usb0_id_detect_pin@0 {
+		allwinner,pins = "PH5";
+		allwinner,function = "gpio_in";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_PULL_UP>;
+	};
+
+	key_pins_etouch: key_pins@0 {
+		allwinner,pins = "PC17";
+		allwinner,function = "gpio_in";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+
+	bl_enable_pin: bl_enable_pin@0 {
+		allwinner,pins = "PH8";
+		allwinner,function = "gpio_out";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_NO_PULL>;
+	};
+
+/*
+	usb0_vbus_detect_pin: usb0_vbus_detect_pin@0 {
+		allwinner,pins = "PH5";
+		allwinner,function = "gpio_in";
+		allwinner,drive = <SUN4I_PINCTRL_10_MA>;
+		allwinner,pull = <SUN4I_PINCTRL_PULL_DOWN>;
+	};
+*/
+};
+
+&ehci0 {
+	status = "okay";
+};
+
+&ehci1 {
+	status = "okay";
+};
+
+&ohci0 {
+	status = "okay";
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+&otg_sram {
+	status = "okay";
+};
+
+&usb_otg {
+	dr_mode = "otg";
+	status = "okay";
+};
+/*
+&reg_usb0_vbus {
+        status = "okay";
+};
+
+&reg_usb1_vbus {
+        status = "okay";
+};
+
+&reg_usb2_vbus {
+        status = "okay";
+};
+
+&usb_power_supply {
+	status = "okay";
+};
+*/
+&usbphy {
+        pinctrl-names = "default";
+        pinctrl-0 = <&usb0_id_detect_pin>;
+        usb0_id_det-gpio = <&pio 7 5 GPIO_ACTIVE_HIGH>; /* PH5 */
+/*
+        usb0_vbus_power-supply = <&usb_power_supply>;
+        usb0_vbus-supply = <&reg_usb0_vbus>;
+        usb1_vbus-supply = <&reg_usb1_vbus>;
+        usb2_vbus-supply = <&reg_usb2_vbus>;
+*/
+        status = "okay";
+};
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins_a>;
+	status = "okay";
+};
+
+&uart2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pins_etouch>;
+	status = "okay";
+};
+
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pins_etouch>;
+	status = "okay";
+};
+&uart4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_pins_a>;
+	status = "okay";
+};
+&uart7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart7_pins_a>;
+	status = "okay";
+};
+
+&pwm {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm0_pins_a>, <&pwm1_pins_a>;
+};
+
+/*
+&spi2 {
+       pinctrl-names = "default";
+       pinctrl-0 = <&spi2_pins_b>,
+                   <&spi2_cs0_pins_b>;
+       status = "okay";
+
+       spidev@0x00 {
+               compatible = "spidev";
+               spi-max-frequency = <12000000>;
+               reg = <0>;
+       };
+};
+*/

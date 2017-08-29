@@ -1,0 +1,13 @@
+diff --git a/drivers/regulator/axp20x-regulator.c b/drivers/regulator/axp20x-regulator.c
+index 6d9ac76..3539675 100644
+--- a/drivers/regulator/axp20x-regulator.c
++++ b/drivers/regulator/axp20x-regulator.c
+@@ -530,6 +530,8 @@ static int axp20x_regulator_probe(struct platform_device *pdev)
+ 		}
+ 	}
+ 
++	regmap_update_bits(axp20x->regmap, AXP20X_CHRG_BAK_CTRL, 0x80, 0x80);
++
+ 	return 0;
+ }
+ 

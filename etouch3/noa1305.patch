@@ -1,0 +1,248 @@
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index 124585c..fb0fbd6 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -290,6 +290,10 @@ config SENSORS_CDM7160
+ 	 tristate "Figaro CO2 Sensor"
+ 	 depends on I2C
+ 
++config SENSORS_NOA1305
++	tristate "ON Semiconductor Ambient Light Sensor"
++	depends on I2C
++
+ config SENSORS_FAM15H_POWER
+ 	tristate "AMD Family 15h processor power"
+ 	depends on X86 && PCI && CPU_SUP_AMD
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index ed2d378..b4d4b5c 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -128,6 +128,7 @@ obj-$(CONFIG_SENSORS_NCT6683)	+= nct6683.o
+ obj-$(CONFIG_SENSORS_NCT6775)	+= nct6775.o
+ obj-$(CONFIG_SENSORS_NCT7802)	+= nct7802.o
+ obj-$(CONFIG_SENSORS_NCT7904)	+= nct7904.o
++obj-$(CONFIG_SENSORS_NOA1305)   += noa1305.o
+ obj-$(CONFIG_SENSORS_NSA320)	+= nsa320-hwmon.o
+ obj-$(CONFIG_SENSORS_NTC_THERMISTOR)	+= ntc_thermistor.o
+ obj-$(CONFIG_SENSORS_PC87360)	+= pc87360.o
+diff --git a/drivers/hwmon/noa1305.c b/drivers/hwmon/noa1305.c
+new file mode 100644
+index 0000000..42b79e8
+--- /dev/null
++++ b/drivers/hwmon/noa1305.c
+@@ -0,0 +1,215 @@
++/* noa1305 humidity and brightness sensor driver
++ *
++ * Copyright (C) 2016 Srdjan Markovic <srdjan.markovic@mec.at>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA
++ *
++ */
++
++#include <linux/delay.h>
++#include <linux/kthread.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/i2c.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/err.h>
++#include <linux/mutex.h>
++#include <linux/device.h>
++
++#define NOA1305_POWER_CONTROL 0x00
++#define NOA1305_POWER_CONTROL_ON_BIT 0x08
++
++#define NOA1305_ALS_DATA 0x06
++#define NOA1305_DEVICE_ID 0x08
++
++
++/**
++ * struct noa1305 - noa1305 device specific data
++ * @hwmon_dev: device registered with hwmon
++ * @thread: kernel thread for periodic polling
++ * @valid: only 0 before first measurement is taken
++ * @brightness: cached temperature measurement value
++ */
++struct noa1305 {
++	struct device *hwmon_dev;
++	struct task_struct *thread;
++	char valid;
++	unsigned int brightness;
++};
++
++static unsigned int noa1305_count_to_brightness(unsigned int count) {
++	/* I_L = C_{nt} over (I_k * T_{int})
++	 * default: T_{int} = 200ms
++         *          I_k = 7.7 (to check!), rounded to 8
++	 */
++	return (count*1000)/(8*200);
++}
++
++static int noa1305_read_value(void *data)
++{
++	struct i2c_client *client = (struct i2c_client*)data;
++	struct noa1305 *noa1305 = i2c_get_clientdata(client);
++	int value;
++
++	while(!kthread_should_stop()) {
++		msleep(1000);
++
++		//reading a word form DAL reads DAH too.
++		value = i2c_smbus_read_word_data(client, NOA1305_ALS_DATA);
++		if(value < 0) {
++			dev_err(&client->dev, "error reading value\n");
++			continue;
++		}
++
++		noa1305->brightness = noa1305_count_to_brightness(value);
++		noa1305->valid=1;
++	}
++	return 0;
++}
++
++
++/**
++ * noa1305_show_brightness() - show temperature measurement value in sysfs
++ * @dev: device
++ * @attr: device attribute
++ * @buf: sysfs buffer (PAGE_SIZE) where measurement values are written to
++ *
++ * Will be called on read access to temp1_input sysfs attribute.
++ * Returns number of bytes written into buffer, negative errno on error.
++ */
++static ssize_t noa1305_show_brightness(struct device *dev,
++	struct device_attribute *attr,
++	char *buf)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct noa1305 *noa1305 = i2c_get_clientdata(client);
++	if (!noa1305->valid)
++		return -EBUSY;
++	return sprintf(buf, "%u\n", noa1305->brightness);
++}
++
++/* sysfs attributes */
++static SENSOR_DEVICE_ATTR(brightness, S_IRUGO, noa1305_show_brightness,
++	NULL, 0);
++
++static struct attribute *noa1305_attributes[] = {
++	&sensor_dev_attr_brightness.dev_attr.attr,
++	NULL
++};
++
++static const struct attribute_group noa1305_attr_group = {
++	.attrs = noa1305_attributes,
++};
++
++/**
++ * noa1305_probe() - probe device
++ * @client: I2C client device
++ * @id: device ID
++ *
++ * Called by the I2C core when an entry in the ID table matches a
++ * device's name.
++ * Returns 0 on success.
++ */
++static int noa1305_probe(struct i2c_client *client,
++	const struct i2c_device_id *id)
++{
++	struct noa1305 *noa1305;
++	int err, device_id;
++
++	if (!i2c_check_functionality(client->adapter,
++				     I2C_FUNC_SMBUS_WORD_DATA)) {
++		dev_err(&client->dev,
++			"adapter does not support SMBus word transactions\n");
++		return -ENODEV;
++	}
++
++	msleep(100);
++
++	device_id = i2c_smbus_read_word_data(client, NOA1305_DEVICE_ID);
++	if(device_id < 0 || device_id != 0x0519) {
++		dev_err(&client->dev, "failed to read device_id (%d/%x)\n", device_id, device_id);
++		return -ENODEV;
++	}
++
++	noa1305 = kzalloc(sizeof(*noa1305), GFP_KERNEL);
++	if (!noa1305) {
++		dev_err(&client->dev, "kzalloc failed\n");
++		return -ENOMEM;
++	}
++	i2c_set_clientdata(client, noa1305);
++
++	err = sysfs_create_group(&client->dev.kobj, &noa1305_attr_group);
++	if (err) {
++		dev_err(&client->dev, "could not create sysfs files\n");
++		goto fail_free;
++	}
++	noa1305->hwmon_dev = hwmon_device_register(&client->dev);
++	if (IS_ERR(noa1305->hwmon_dev)) {
++		dev_err(&client->dev, "unable to register hwmon device\n");
++		err = PTR_ERR(noa1305->hwmon_dev);
++		goto fail_remove_sysfs;
++	}
++	noa1305->thread = kthread_run(&noa1305_read_value, client, "noa1305");
++
++	dev_info(&client->dev, "initialized\n");
++
++	return 0;
++
++fail_remove_sysfs:
++	sysfs_remove_group(&client->dev.kobj, &noa1305_attr_group);
++fail_free:
++	kfree(noa1305);
++
++	return err;
++}
++
++/**
++ * noa1305_remove() - remove device
++ * @client: I2C client device
++ */
++static int noa1305_remove(struct i2c_client *client)
++{
++	struct noa1305 *noa1305 = i2c_get_clientdata(client);
++
++	kthread_stop(noa1305->thread);
++	hwmon_device_unregister(noa1305->hwmon_dev);
++	sysfs_remove_group(&client->dev.kobj, &noa1305_attr_group);
++	kfree(noa1305);
++
++	return 0;
++}
++
++/* Device ID table */
++static const struct i2c_device_id noa1305_id[] = {
++	{ "noa1305", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, noa1305_id);
++
++static struct i2c_driver noa1305_driver = {
++	.driver.name = "noa1305",
++	.probe       = noa1305_probe,
++	.remove      = noa1305_remove,
++	.id_table    = noa1305_id,
++};
++
++module_i2c_driver(noa1305_driver);
++
++MODULE_AUTHOR("Srdjan Markovic <srdjan.markovic@mec.at>");
++MODULE_DESCRIPTION("NOA1305 ALS sensor driver");
++MODULE_LICENSE("GPL");
++

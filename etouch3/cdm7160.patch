@@ -1,0 +1,305 @@
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index eaf2f91..124585c 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -286,6 +286,10 @@ config SENSORS_K10TEMP
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called k10temp.
+ 
++config SENSORS_CDM7160
++	 tristate "Figaro CO2 Sensor"
++	 depends on I2C
++
+ config SENSORS_FAM15H_POWER
+ 	tristate "AMD Family 15h processor power"
+ 	depends on X86 && PCI && CPU_SUP_AMD
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index fe87d28..ed2d378 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -47,6 +47,7 @@ obj-$(CONFIG_SENSORS_APPLESMC)	+= applesmc.o
+ obj-$(CONFIG_SENSORS_ARM_SCPI)	+= scpi-hwmon.o
+ obj-$(CONFIG_SENSORS_ASC7621)	+= asc7621.o
+ obj-$(CONFIG_SENSORS_ATXP1)	+= atxp1.o
++obj-$(CONFIG_SENSORS_CDM7160)   += cdm7160.o
+ obj-$(CONFIG_SENSORS_CORETEMP)	+= coretemp.o
+ obj-$(CONFIG_SENSORS_DA9052_ADC)+= da9052-hwmon.o
+ obj-$(CONFIG_SENSORS_DA9055)+= da9055-hwmon.o
+diff --git a/drivers/hwmon/cdm7160.c b/drivers/hwmon/cdm7160.c
+new file mode 100644
+index 0000000..310d12a
+--- /dev/null
++++ b/drivers/hwmon/cdm7160.c
+@@ -0,0 +1,272 @@
++/* cdm7160 humidity and co2 sensor driver
++ *
++ * Copyright (C) 2016 Srdjan Markovic <srdjan.markovic@mec.at>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA
++ *
++ */
++
++#include <linux/delay.h>
++#include <linux/kthread.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/i2c.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/err.h>
++#include <linux/mutex.h>
++#include <linux/device.h>
++
++/* CDM-busy: PC2
++ * twi 1, 0x68
++*/
++
++#define CDM7160_RST_REG 0x00
++#define CDM7160_CTL_EEP 0x01
++#define CDM7160_ST1_REG 0x02
++#define CDM7160_DAL_REG 0x03
++#define CDM7160_DAH_REG 0x04
++#define CDM7160_AVE_EEP 0x07
++
++#define CDM7160_RST_REST_BIT 0x01
++
++#define CDM7160_CTL_CTL0_BIT 0x01
++#define CDM7160_CTL_CTL1_BIT 0x02
++#define CDM7160_CTL_FMODE_BIT 0x4
++
++#define CDM7160_ST1_BUSY_BIT 0x80
++#define CDM7160_ST1_ALARM_BIT 0x40
++#define CDM7160_ST1_AVGFG_BIT 0x10
++#define CDM7160_ST1_CAD0_BIT 0x02
++#define CDM7160_ST1_MSEL_BIT 0x01
++
++#define CDM7160_ST1_OK_BITMASK (CDM7160_ST1_BUSY_BIT \
++				    | CDM7160_ST1_AVGFG_BIT \
++				    | CDM7160_ST1_MSEL_BIT)
++
++#define CDM7160_AVE_DEFAULT_AVG 4
++
++/**
++ * struct cdm7160 - cdm7160 device specific data
++ * @hwmon_dev: device registered with hwmon
++ * @thread: kernel thread for periodic polling
++ * @valid: only 0 before first measurement is taken
++ * @co2: cached temperature measurement value
++ */
++struct cdm7160 {
++	struct device *hwmon_dev;
++	struct task_struct *thread;
++	char valid;
++	unsigned int co2;
++};
++
++static int cdm7160_check_status(struct i2c_client *client) {
++	unsigned int status;
++	status = (unsigned int)i2c_smbus_read_byte_data(client, CDM7160_ST1_REG);
++	if((status & CDM7160_ST1_OK_BITMASK) != CDM7160_ST1_AVGFG_BIT || status > 0xFF) //check for errors
++		return -1;
++	return 0;
++}
++
++static int cdm7160_read_value(void *data)
++{
++	struct i2c_client *client = (struct i2c_client*)data;
++	struct cdm7160 *cdm7160 = i2c_get_clientdata(client);
++	int value;
++
++	while(!kthread_should_stop()) {
++		msleep(1000);
++		
++		if(cdm7160_check_status(client)) {
++			continue;
++		}
++
++		//reading a word form DAL reads DAH too.
++		value = i2c_smbus_read_word_data(client, CDM7160_DAL_REG);
++		if(value < 0) {
++			dev_err(&client->dev, "error reading value\n");
++			continue;
++		}
++
++		//check the status afterwards to see if it measureed while we read
++		if(cdm7160_check_status(client)) {
++			continue;
++		}
++
++
++		cdm7160->co2 = (unsigned int)value;
++		cdm7160->valid=1;
++	}
++	return 0;
++}
++
++
++/**
++ * cdm7160_show_co2() - show temperature measurement value in sysfs
++ * @dev: device
++ * @attr: device attribute
++ * @buf: sysfs buffer (PAGE_SIZE) where measurement values are written to
++ *
++ * Will be called on read access to temp1_input sysfs attribute.
++ * Returns number of bytes written into buffer, negative errno on error.
++ */
++static ssize_t cdm7160_show_co2(struct device *dev,
++	struct device_attribute *attr,
++	char *buf)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct cdm7160 *cdm7160 = i2c_get_clientdata(client);
++	if (!cdm7160->valid)
++		return -EBUSY;
++	return sprintf(buf, "%u\n", cdm7160->co2);
++}
++
++/* sysfs attributes */
++static SENSOR_DEVICE_ATTR(co2ppm, S_IRUGO, cdm7160_show_co2,
++	NULL, 0);
++
++static struct attribute *cdm7160_attributes[] = {
++	&sensor_dev_attr_co2ppm.dev_attr.attr,
++	NULL
++};
++
++static const struct attribute_group cdm7160_attr_group = {
++	.attrs = cdm7160_attributes,
++};
++
++/**
++ * cdm7160_probe() - probe device
++ * @client: I2C client device
++ * @id: device ID
++ *
++ * Called by the I2C core when an entry in the ID table matches a
++ * device's name.
++ * Returns 0 on success.
++ */
++static int cdm7160_probe(struct i2c_client *client,
++	const struct i2c_device_id *id)
++{
++	struct cdm7160 *cdm7160;
++	int err, avgc;
++
++	if (!i2c_check_functionality(client->adapter,
++				     I2C_FUNC_SMBUS_WORD_DATA| I2C_FUNC_SMBUS_BYTE_DATA)) {
++		dev_err(&client->dev,
++			"adapter does not support SMBus word transactions\n");
++		return -ENODEV;
++	}
++/*
++ * init:
++ * write 0x0 0x1 -> reset
++ * write 0x7 0x4 -> ave=4 (5x average)
++ * write 0x1 0x2 -> CTL1 (Cont Op)
++ */
++	if(i2c_smbus_write_byte_data(client, CDM7160_RST_REG, CDM7160_RST_REST_BIT)) {
++		dev_err(&client->dev, "failed to reset device\n");
++		return -ENODEV;
++	}
++	msleep(100);
++
++	avgc = i2c_smbus_read_byte_data(client, CDM7160_AVE_EEP);
++	if(avgc < 0) {
++		dev_err(&client->dev, "failed to read avgc\n");
++		return -ENODEV;
++	}
++	if(avgc !=  CDM7160_AVE_DEFAULT_AVG) {
++		dev_dbg(&client->dev, "correcting AVGC\n");
++		if(i2c_smbus_write_byte_data(client, CDM7160_AVE_EEP, CDM7160_AVE_DEFAULT_AVG)) {
++			dev_err(&client->dev, "failed to set agvc\n");
++			return -ENODEV;
++		}
++	}
++	
++	if(i2c_smbus_write_byte_data(client,CDM7160_CTL_EEP, CDM7160_CTL_CTL1_BIT)) {
++		dev_err(&client->dev, "failed to start device\n");
++		return -ENODEV;
++	}	
++
++	cdm7160 = kzalloc(sizeof(*cdm7160), GFP_KERNEL);
++	if (!cdm7160) {
++		dev_err(&client->dev, "kzalloc failed\n");
++		return -ENOMEM;
++	}
++	i2c_set_clientdata(client, cdm7160);
++
++	err = sysfs_create_group(&client->dev.kobj, &cdm7160_attr_group);
++	if (err) {
++		dev_err(&client->dev, "could not create sysfs files\n");
++		goto fail_free;
++	}
++	cdm7160->hwmon_dev = hwmon_device_register(&client->dev);
++	if (IS_ERR(cdm7160->hwmon_dev)) {
++		dev_err(&client->dev, "unable to register hwmon device\n");
++		err = PTR_ERR(cdm7160->hwmon_dev);
++		goto fail_remove_sysfs;
++	}
++	cdm7160->thread = kthread_run(&cdm7160_read_value, client, "cdm7160");
++
++	dev_info(&client->dev, "initialized\n");
++
++	return 0;
++
++fail_remove_sysfs:
++	sysfs_remove_group(&client->dev.kobj, &cdm7160_attr_group);
++fail_free:
++	kfree(cdm7160);
++
++	return err;
++}
++
++/**
++ * cdm7160_remove() - remove device
++ * @client: I2C client device
++ */
++static int cdm7160_remove(struct i2c_client *client)
++{
++	struct cdm7160 *cdm7160 = i2c_get_clientdata(client);
++
++	kthread_stop(cdm7160->thread);
++	hwmon_device_unregister(cdm7160->hwmon_dev);
++	sysfs_remove_group(&client->dev.kobj, &cdm7160_attr_group);
++	kfree(cdm7160);
++
++	return 0;
++}
++
++/* Device ID table */
++
++static struct i2c_device_id cdm7160_id[] = {
++	{ "cdm7160", 0 },
++	{ },
++};
++
++MODULE_DEVICE_TABLE(i2c, cdm7160_id);
++
++static struct i2c_driver cdm7160_driver = {
++	.driver = {
++	       .name = "cdm7160",
++	},
++	.id_table    = cdm7160_id,
++	.probe       = cdm7160_probe,
++	.remove      = cdm7160_remove,
++};
++
++module_i2c_driver(cdm7160_driver);
++
++MODULE_AUTHOR("Srdjan Markovic <srdjan.markovic@mec.at>");
++MODULE_DESCRIPTION("CDM7160 CO2 sensor driver");
++MODULE_LICENSE("GPL");
++
